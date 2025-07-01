@@ -8,6 +8,7 @@ A basic command-line shell implemented in C to learn OS concepts like process cr
 - Supports built-in commands: `cd`, `help`, and `exit`.
 - Reads and parses user input with dynamic memory allocation.
 - Demonstrates basic Unix system calls like `chdir()`, `fork()`, `waitpid()`, and `execvp()`.
+- Supports up/down arrows for command history.
 
 ## How to Build
 

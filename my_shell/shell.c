@@ -3,10 +3,12 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <termios.h>
 
 #define BUFF_SIZE 1024 // size of input buffer
 #define LSH_TOK_BUFSIZE 64 // size of argument array
 #define LSH_TOK_DELIM " \t\r\n\a" // delimiters
+#define HISTORY_SIZE 5
 
 int lsh_execute_command(char ** args);
 int lsh_launch(char **args);
@@ -32,10 +34,31 @@ int (*builtin_func[]) (char **) = {
   &lsh_exit
 };
 
+// buffer (array of strings) for storing command history
+char* history_buffer[HISTORY_SIZE];
+int write_index = 0;
+int history_count = 0;
 
 int lsh_num_builtins() {
   return sizeof(builtin_str) / sizeof(char *);
 }
+
+// non-canonical mode / raw mode o/ cbreak mode,
+// where input is read one character at a time.
+void enable_raw_mode() {
+    struct termios t;
+    tcgetattr(STDIN_FILENO, &t);
+    t.c_lflag &= ~(ICANON | ECHO); // Disable canonical mode and echo
+    tcsetattr(STDIN_FILENO, TCSANOW, &t);
+}
+
+void disable_raw_mode() {
+    struct termios t;
+    tcgetattr(STDIN_FILENO, &t);
+    t.c_lflag |= ICANON | ECHO; // Re-enable canonical mode and echo
+    tcsetattr(STDIN_FILENO, TCSANOW, &t);
+}
+
 
 /*
   Builtin function implementations.
@@ -77,9 +100,12 @@ void lsh_loop(){
 	char *command;
 	char **args;
 	int status;
+	char pwd[1024];
+
 
 	do {
-		printf(">");
+		getcwd(pwd, sizeof(pwd));
+		printf("%s >", pwd);
 		command = lsh_read_command();
 		args = lsh_split_command(command);
 		status = lsh_execute_command(args);
@@ -94,23 +120,99 @@ char* lsh_read_command(){
 	int position = 0;
 	char* buffer = malloc(sizeof(char) * buff_size);
 	int c;
+	int history_cursor = history_count;
+
 
 	if(!buffer){
 		fprintf(stderr, "Buffer allocation failure\n");
 		exit(EXIT_FAILURE);
 	}
 
+	enable_raw_mode();  // Enter non-canonical mode
+
+	printf("> ");
+    	fflush(stdout);
+
 	while(1){
 		// read one char at a time
 		c = getchar();
 
+		if (c == '\x1b') { // or 27
+			char seq1 = getchar();
+            		char seq2 = getchar();
+    			if (seq1 == '[' && seq2 == 'A') {
+        			// ↑ arrow pressed
+				if (history_count == 0 || history_cursor == 0)
+            				continue;
+                		history_cursor--;
+
+				printf("\33[2K\r> ");
+        			fflush(stdout);
+
+        			strcpy(buffer, history_buffer[history_cursor]);
+        			position = strlen(buffer);
+        			printf("%s", buffer);
+        			fflush(stdout);
+                		
+				continue;
+    			}
+
+			if (seq1 == '[' && seq2 == 'B') {
+                		// DOWN arrow
+                		if (history_cursor < history_count - 1) {
+    					history_cursor++;
+
+    					printf("\33[2K\r> ");
+    					fflush(stdout);
+
+    					strcpy(buffer, history_buffer[history_cursor]);
+    					position = strlen(buffer);
+    					printf("%s", buffer);
+    					fflush(stdout);
+				} else {
+    				// Past most recent, clear line
+    				history_cursor = history_count;
+    				buffer[0] = '\0';
+    				position = 0;
+    				printf("\33[2K\r> ");
+    				fflush(stdout);
+				}
+            		}
+        	}
+
+		// handle backspace
+		if (c == 127 || c == 8) {
+    			if (position > 0) {
+        			position--;
+       	 			buffer[position] = '\0';
+        			printf("\b \b");
+        			fflush(stdout);
+    			}
+    			continue;
+		}
+
 		if (c == EOF || c == '\n'){
 			// replace with null character
 			buffer[position] = '\0';
+			printf("\n");
+			
+			if (strlen(buffer) > 0) {
+				if (history_buffer[write_index] != NULL){
+					free(history_buffer[write_index]);
+				}
+				history_buffer[write_index] = strdup(buffer);
+				write_index = (write_index + 1) % HISTORY_SIZE;
+
+				if (history_count < HISTORY_SIZE)
+                    		history_count++;
+			}
+			disable_raw_mode();  // Restore terminal mode
 			return buffer;
 		}
 		else{
 			buffer[position] = c;
+			putchar(c);
+    			fflush(stdout);
 		}
 		position++;
 
@@ -206,7 +308,17 @@ int lsh_execute_command(char ** args){
 
 int main(int argc, char **argv){
 	
+	// initialize history buffer
+	for (int i = 0; i < HISTORY_SIZE; i++) {
+    		history_buffer[i] = NULL;
+	}
+	
 	lsh_loop();
+
+	for (int i = 0; i < HISTORY_SIZE; i++) {
+    		free(history_buffer[i]);
+	}
+
 
 	return EXIT_SUCCESS;
 }
